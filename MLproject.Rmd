@@ -1,0 +1,159 @@
+---
+title: "Machine Learning Course Project"
+author: "Yi Wang"
+date: "December 17, 2015"
+output: html_document
+---
+#Background and Objective
+    In this project, 6 participants were asked to perform barbell lifts correctly and incorrectly in 5 different ways. We use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants to predict the manner in which they did the exercise, which is the "classe" variable in the training set. "classe" variable will be our dependent variable.
+
+#Data Preparation
+    Data for this project comes in training dataset and testing dataset. The testing dataset will be used to predict "classe" variable and submit for grading. 
+    First, I downloaded training and testing data to my local computer using the following URLs.
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv 
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+    Second, I read in the training and testing data into R.
+```{r}
+#change working directory
+setwd("C://Users/yiwang/Documents/ML_Coursera/MLproject")
+#load train and test data
+train<-read.csv("pml-training.csv", header=T)
+test<-read.csv("pml-testing.csv", header=T)
+```
+    Third, many columns in test dataset are NA, so they cannot be used for prediction. I removed those columns from training dataset and the number of variables reduces from 160 to 60.
+```{r}
+#remove the columns, which are NA in test dataset.
+idx=sapply(train[1,], is.na)
+idx2=sapply(train[1,], function(x) x=="")
+train1=subset(train, select=which(idx==FALSE&idx2==FALSE))
+```
+    Fourth, observations within the same "num-wind" has the same classe, so I think the data within each "num-wind" are highly correlated and it makes sense to aggregate the training data by mean for each "num-wind". Meanwhile, the same user have different classes at different time-point or "num-win", so user-name can be a variable. Similarly, each time-point can have several num_winds and they correspond to different classes, so time-point can be a variable too.
+```{r}
+#aggregate by num_window, and then correct user_name, timestamp, and classe
+train.ag=aggregate(.~num_window, data=train1,mean)
+train.ag$user_name=sapply(train.ag$num_window, 
+                          function(x) unique(train1[train1$num_window==x,]$user_name) ) 
+train.ag$cvtd_timestamp=sapply(train.ag$num_window,
+                               function(x) unique(train1[train1$num_window==x,]$cvtd_timestamp))
+train.ag$classe=sapply(train.ag$num_window,
+                       function(x) unique(train1[train1$num_window==x,]$classe))
+train.ag1=subset(train.ag, select=-c(1,2,4,5,7))
+```
+    Fifth, for testing different models, I divided the training data into subTrain and subTest datasets.subTrain contains 70% of train data, while subTest contains 30% of the train data.
+```{r, results='hide', message=FALSE, warning=FALSE}
+#partition the train.ag1 into subtrain and subtest
+library(caret)
+set.seed(333)
+inTrain=createDataPartition(y=train.ag1$classe, p=0.7, list=FALSE)
+subTrain=train.ag1[inTrain,]
+subTest=train.ag1[-inTrain,]
+```
+
+#Exploratory data analysis
+Before model fitting, I explore the subTrain data a little bit. I checked the correlation between classe and other variables.
+```{r}
+cormtx=cor(as.numeric(subTrain$classe), subset(subTrain, select=-c(1,2, 55))) 
+plot(cormtx[1:52])
+abline(h=0.2, col="red", lwd=2)
+abline(h=-0.2,col="red", lwd=2)
+abline(h=-0.1, col="blue", lwd=2)
+abline(h=0.1,col="blue", lwd=2)
+text(seq(1:52), cormtx[1:52], labels=names(subTrain[3:54]))
+```
+
+#Model Fitting
+    I will use caret package in R to do model fitting. I tried several models such as classification trees, boosting, bagging, and random forest.I used 6-fold cross validation to train the models.
+##model 1: rpart2 with 6-fold CV
+```{r, results='hide', message=FALSE, warning=FALSE}
+fitcontrol=trainControl(method="cv", number=6, summaryFunction = defaultSummary)
+grid<-expand.grid(maxdepth=seq(10, 30, 5))
+set.seed(123)
+fit.rpart2CV<-train(classe~., data=subTrain, method="rpart2",
+                    trControl=fitcontrol, tuneGrid=grid, metric="Accuracy")
+```
+```{r}
+plot(fit.rpart2CV)
+fit.rpart2CV
+pred<-predict(fit.rpart2CV, subTest)
+confusionMatrix(subTest$classe, pred)
+```
+    From the confusion matrix, we can find the accuracy of the rpart2 model is 0.68 for the subTest data, which is not very good.
+##model 2: ctree2 with 6-fold CV
+```{r, results='hide', message=FALSE, warning=FALSE}
+fitcontrol=trainControl(method="cv", number=6, summaryFunction = defaultSummary)
+grid<-expand.grid(maxdepth=seq(10, 40, 5))
+set.seed(123)
+fit.ctree2<-train(classe~., data=subTrain, method="ctree2",
+                  trControl=fitcontrol, tuneGrid=grid, metric="Accuracy")
+```
+```{r}
+plot(fit.ctree2)
+fit.ctree2
+pred<-predict(fit.ctree2, subTest)
+confusionMatrix(subTest$classe, pred)
+```
+    From the confusion matrix of, the accuracy of the ctree2 model is 0.80 for the subTest data, which is better than rpart2 model.
+##model 3: generalized boosting model (gbm, 6-fold CV)
+```{r, results='hide', message=FALSE, warning=FALSE}
+set.seed(123)
+fitControl<-trainControl(method="cv", number=6, summaryFunction = defaultSummary)
+Grid<-expand.grid(n.trees=seq(50, 300, 50), interaction.depth=c(30),
+                  shrinkage=c(0.1), n.minobsinnode=c(10))
+fit.gbm<-train(classe~., data=subTrain, method="gbm",
+               trControl=fitControl,tuneGrid=Grid, metric="Accuracy")
+```
+```{r}
+plot(fit.gbm)
+fit.gbm
+pred<-predict(fit.gbm, subTest)
+confusionMatrix(subTest$classe, pred)
+```
+    The accuracy of gbm model for subTest data is 0.91, which is better than both rpart2 and ctree2, and is good enough.
+##model 4: random forest with 6-fold CV
+```{r, results='hide', message=FALSE, warning=FALSE}
+set.seed(123)
+fitControl<-trainControl(method="cv", number=6)
+Grid<-expand.grid(mtry=seq(4, 32, 4))
+fit.rf<-train(classe~., data=subTrain, method="rf", trControl=fitControl,
+              tuneGrid=Grid, metric="Accuracy")
+```
+```{r}
+plot(fit.rf)
+fit.rf
+pred<-predict(fit.rf, subTest)
+confusionMatrix(subTest$classe, pred)
+```
+    Randome forest works well by coming up with the accuracy of 0.91 for the subTest data. 
+##model 5: bagged cart -- treebag
+```{r, results='hide', message=FALSE, warning=FALSE}
+fitControl <- trainControl(method = "cv",number=6)
+fit.treebag <- train(classe~., data=subTrain, method = 'treebag',
+                     trControl=fitControl) 
+```
+```{r}
+fit.treebag
+pred<-predict(fit.treebag, subTest)
+confusionMatrix(subTest$classe, pred)
+```
+    The treebag model works good with subTest data by coming up with the accuracy of 0.91.    
+##Model Stacking
+Model stacking usually will increase the accuracy for predicting. I stacked the results of model 3, 4, and 5 by majority vote to get the final prediction. I take the predictions from random forest, gbm, and treebag models, and then I pick the majority vote from these three models to get the final prediction.
+```{r}
+pred1<-predict(fit.rf, test)
+pred2<-predict(fit.gbm, test)
+pred3<-predict(fit.treebag, test)
+predmtx<-data.frame(pred1, pred2, pred3)
+predtest=apply(predmtx, 1, function(x) names(sort(table(x), decreasing=TRUE))[1])
+predtest
+```
+##Save the predicted results for test data into files for submission
+```{r}
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+pml_write_files(predtest)
+```
